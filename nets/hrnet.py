@@ -7,9 +7,11 @@ from .backbone import BN_MOMENTUM, hrnet_classification
 
 
 class HRnet_Backbone(nn.Module):
-    def __init__(self, backbone = 'hrnetv2_w18', pretrained = False):
+    def __init__(self, backbone = 'hrnetv2_w18', pretrained = False, in_channels = 3):
         super(HRnet_Backbone, self).__init__()
-        self.model    = hrnet_classification(backbone = backbone, pretrained = pretrained)
+        # in_channels 从训练配置传入，用来决定 HRNet stem 的第一层卷积
+        # 接收 3/4/6 个输入通道。
+        self.model    = hrnet_classification(backbone = backbone, pretrained = pretrained, in_channels = in_channels)
         del self.model.incre_modules
         del self.model.downsamp_modules
         del self.model.final_layer
@@ -58,11 +60,11 @@ class HRnet_Backbone(nn.Module):
         return y_list
 
 class HRnet(nn.Module):
-    def __init__(self, num_classes = 21, backbone = 'hrnetv2_w18', pretrained = False):
+    def __init__(self, num_classes = 21, backbone = 'hrnetv2_w18', pretrained = False, in_channels = 3):
         super(HRnet, self).__init__()
-        self.backbone       = HRnet_Backbone(backbone = backbone, pretrained = pretrained)
+        self.backbone       = HRnet_Backbone(backbone = backbone, pretrained = pretrained, in_channels = in_channels)
 
-        last_inp_channels   = np.int(np.sum(self.backbone.model.pre_stage_channels))
+        last_inp_channels   = int(np.sum(self.backbone.model.pre_stage_channels))
 
         self.last_layer = nn.Sequential(
             nn.Conv2d(in_channels=last_inp_channels, out_channels=last_inp_channels, kernel_size=1, stride=1, padding=0),

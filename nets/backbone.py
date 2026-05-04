@@ -2,7 +2,7 @@ import torch
 import torch._utils
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models.utils import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url
 
 BN_MOMENTUM = 0.1
 
@@ -185,7 +185,7 @@ class HighResolutionModule(nn.Module):
 
 
 class HighResolutionNet_Classification(nn.Module):
-    def __init__(self, num_classes, backbone):
+    def __init__(self, num_classes, backbone, in_channels=3):
         super(HighResolutionNet_Classification, self).__init__()
         num_filters = {
             'hrnetv2_w18' : [18, 36, 72, 144],
@@ -193,7 +193,10 @@ class HighResolutionNet_Classification(nn.Module):
             'hrnetv2_w48' : [48, 96, 192, 384],
         }[backbone]
         # stem net
-        self.conv1  = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
+        # 原版 HRNet 只接收 RGB 三通道图像。多光谱训练时，第一层卷积的
+        # 输入通道数必须和 selected_bands 的数量一致，否则 4/6 波段 tif
+        # 会在 forward 时出现通道数不匹配。
+        self.conv1  = nn.Conv2d(in_channels, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1    = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.conv2  = nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn2    = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -366,8 +369,8 @@ class HighResolutionNet_Classification(nn.Module):
 
         return y
         
-def hrnet_classification(pretrained=False, backbone='hrnetv2_w18'):
-    model = HighResolutionNet_Classification(num_classes=1000, backbone=backbone)
+def hrnet_classification(pretrained=False, backbone='hrnetv2_w18', in_channels=3):
+    model = HighResolutionNet_Classification(num_classes=1000, backbone=backbone, in_channels=in_channels)
     if pretrained:
         model_urls = {
             'hrnetv2_w18' : "https://github.com/bubbliiiing/hrnet-pytorch/releases/download/v1.0/hrnetv2_w18_imagenet_pretrained.pth",
@@ -375,6 +378,13 @@ def hrnet_classification(pretrained=False, backbone='hrnetv2_w18'):
             'hrnetv2_w48' : "https://github.com/bubbliiiing/hrnet-pytorch/releases/download/v1.0/hrnetv2_w48_imagenet_pretrained.pth",
         }
         state_dict = load_state_dict_from_url(model_urls[backbone], model_dir="./model_data")
-        model.load_state_dict(state_dict)
+        if in_channels != 3:
+            # ImageNet 预训练权重的 conv1.weight 形状固定是 [64, 3, 3, 3]。
+            # 多光谱输入变成 4/6 通道后，第一层形状不同，不能直接加载；
+            # 这里跳过第一层，让它随机初始化，其余层仍尽量加载预训练权重。
+            state_dict.pop("conv1.weight", None)
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            model.load_state_dict(state_dict)
 
     return model

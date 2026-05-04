@@ -31,8 +31,7 @@ if __name__ == "__main__":
     #   count、name_classes仅在mode='predict'时有效
     #-------------------------------------------------------------------------#
     count           = False
-    name_classes    = ["background","aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
-    # name_classes    = ["background","cat","dog"]
+    name_classes    = ["background", "target"]
     #----------------------------------------------------------------------------------------------------------#
     #   video_path          用于指定视频的路径，当video_path=0时表示检测摄像头
     #                       想要检测视频，则设置如video_path = "xxx.mp4"即可，代表读取出根目录下的xxx.mp4文件。
@@ -86,13 +85,14 @@ if __name__ == "__main__":
         while True:
             img = input('Input image filename:')
             try:
-                image = Image.open(img)
-            except:
-                print('Open Error! Try again!')
-                continue
-            else:
-                r_image = hrnet.detect_image(image, count=count, name_classes=name_classes)
+                # 这里直接把路径传给 hrnet.detect_image。
+                # 普通图片会用 PIL 读取；多光谱 .tif 会在 hrnet.py 内部用 rasterio 读取并选波段。
+                r_image = hrnet.detect_image(img, count=count, name_classes=name_classes)
                 r_image.show()
+            except Exception as e:
+                print('Open Error! Try again!')
+                print(e)
+                continue
 
     elif mode == "video":
         capture=cv2.VideoCapture(video_path)
@@ -141,8 +141,7 @@ if __name__ == "__main__":
         cv2.destroyAllWindows()
 
     elif mode == "fps":
-        img = Image.open(fps_image_path)
-        tact_time = hrnet.get_FPS(img, test_interval)
+        tact_time = hrnet.get_FPS(fps_image_path, test_interval)
         print(str(tact_time) + ' seconds, ' + str(1/tact_time) + 'FPS, @batch_size 1')
         
     elif mode == "dir_predict":
@@ -153,8 +152,8 @@ if __name__ == "__main__":
         for img_name in tqdm(img_names):
             if img_name.lower().endswith(('.bmp', '.dib', '.png', '.jpg', '.jpeg', '.pbm', '.pgm', '.ppm', '.tif', '.tiff')):
                 image_path  = os.path.join(dir_origin_path, img_name)
-                image       = Image.open(image_path)
-                r_image     = hrnet.detect_image(image)
+                # 批量预测同样传路径，确保 .tif 能按多光谱流程读取。
+                r_image     = hrnet.detect_image(image_path)
                 if not os.path.exists(dir_save_path):
                     os.makedirs(dir_save_path)
                 r_image.save(os.path.join(dir_save_path, img_name))

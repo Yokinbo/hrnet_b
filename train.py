@@ -9,6 +9,8 @@ import torch.distributed as dist
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
+from multispectral_config import (band_mode, image_ext, in_channels,
+                                  normalization_config, selected_bands)
 from nets.hrnet import HRnet
 from nets.hrnet_training import (get_lr_scheduler, set_optimizer_lr,
                                  weights_init)
@@ -79,7 +81,9 @@ if __name__ == "__main__":
     #   num_classes     训练自己的数据集必须要修改的
     #                   自己需要的分类个数+1，如2+1
     #-----------------------------------------------------#
-    num_classes     = 21
+    # 多光谱光伏提取通常是二分类语义分割：
+    # 0 = background，1 = target，因此类别总数为 2。
+    num_classes     = 2
     #-------------------------------------------------------------------#
     #   所使用的的主干网络：
     #   hrnetv2_w18
@@ -112,11 +116,13 @@ if __name__ == "__main__":
     #   一般来讲，网络从0开始的训练效果会很差，因为权值太过随机，特征提取效果不明显，因此非常、非常、非常不建议大家从0开始训练！
     #   如果一定要从0开始，可以了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
+    # 这里加载的是整模型权重。若使用 VOC 的 HRNet 权重，类别头和多光谱第一层
+    # 会因为形状不同而自动跳过，只加载能匹配的 backbone 参数。
     model_path      = "model_data/hrnetv2_w18_weights_voc.pth"
     #------------------------------#
     #   输入图片的大小
     #------------------------------#
-    input_shape     = [480, 480]
+    input_shape     = [256, 256]
     
     #----------------------------------------------------------------------------------------------------------------------------#
     #   训练分为两个阶段，分别是冻结阶段和解冻阶段。设置冻结阶段是为了满足机器性能不足的同学的训练需求。
@@ -160,8 +166,8 @@ if __name__ == "__main__":
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 50
-    Freeze_batch_size   = 16
+    Freeze_Epoch        = 30
+    Freeze_batch_size   = 8
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
@@ -169,8 +175,8 @@ if __name__ == "__main__":
     #   UnFreeze_Epoch          模型总共训练的epoch
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 100
-    Unfreeze_batch_size = 8
+    UnFreeze_Epoch      = 70
+    Unfreeze_batch_size = 4
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
     #                   默认先冻结主干训练后解冻训练。
@@ -211,6 +217,8 @@ if __name__ == "__main__":
     #   save_dir        权值与日志文件保存的文件夹
     #------------------------------------------------------------------#
     save_dir            = 'logs'
+    # 不同波段实验分开保存，避免 rgb / 4band / 6band 的权重和 loss 日志混在一起。
+    save_dir            = os.path.join(save_dir, band_mode)
     #------------------------------------------------------------------#
     #   eval_flag       是否在训练时进行评估，评估对象为验证集
     #   eval_period     代表多少个epoch评估一次，不建议频繁的评估
@@ -251,7 +259,7 @@ if __name__ == "__main__":
     #                   keras里开启多线程有些时候速度反而慢了许多
     #                   在IO为瓶颈的时候再开启多线程，即GPU运算速度远大于读取图片的速度。
     #------------------------------------------------------------------#
-    num_workers     = 4
+    num_workers     = 0
 
     seed_everything(seed)
     #------------------------------------------------------#
@@ -282,7 +290,8 @@ if __name__ == "__main__":
         else:
             download_weights(backbone)
 
-    model   = HRnet(num_classes=num_classes, backbone=backbone, pretrained=pretrained)
+    # in_channels 来自 multispectral_config.py，保证 HRNet 第一层卷积和当前波段数一致。
+    model   = HRnet(num_classes=num_classes, backbone=backbone, pretrained=pretrained, in_channels=in_channels)
     if not pretrained:
         weights_init(model)
     if model_path != '':
@@ -320,7 +329,7 @@ if __name__ == "__main__":
     if local_rank == 0:
         time_str        = datetime.datetime.strftime(datetime.datetime.now(),'%Y_%m_%d_%H_%M_%S')
         log_dir         = os.path.join(save_dir, "loss_" + str(time_str))
-        loss_history    = LossHistory(log_dir, model, input_shape=input_shape)
+        loss_history    = LossHistory(log_dir, model, input_shape=input_shape, in_channels=in_channels)
     else:
         loss_history    = None
         
@@ -368,6 +377,8 @@ if __name__ == "__main__":
     if local_rank == 0:
         show_config(
             num_classes = num_classes, backbone = backbone, model_path = model_path, input_shape = input_shape, \
+            band_mode = band_mode, image_ext = image_ext, selected_bands = selected_bands, in_channels = in_channels, \
+            normalization_config = normalization_config, \
             Init_Epoch = Init_Epoch, Freeze_Epoch = Freeze_Epoch, UnFreeze_Epoch = UnFreeze_Epoch, Freeze_batch_size = Freeze_batch_size, Unfreeze_batch_size = Unfreeze_batch_size, Freeze_Train = Freeze_Train, \
             Init_lr = Init_lr, Min_lr = Min_lr, optimizer_type = optimizer_type, momentum = momentum, lr_decay_type = lr_decay_type, \
             save_period = save_period, save_dir = save_dir, num_workers = num_workers, num_train = num_train, num_val = num_val
@@ -441,8 +452,8 @@ if __name__ == "__main__":
         if epoch_step == 0 or epoch_step_val == 0:
             raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
         
-        train_dataset   = SegmentationDataset(train_lines, input_shape, num_classes, True, VOCdevkit_path)
-        val_dataset     = SegmentationDataset(val_lines, input_shape, num_classes, False, VOCdevkit_path)
+        train_dataset   = SegmentationDataset(train_lines, input_shape, num_classes, True, VOCdevkit_path, image_ext=image_ext, selected_bands=selected_bands)
+        val_dataset     = SegmentationDataset(val_lines, input_shape, num_classes, False, VOCdevkit_path, image_ext=image_ext, selected_bands=selected_bands)
     
         if distributed:
             train_sampler   = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True,)
@@ -466,7 +477,7 @@ if __name__ == "__main__":
         #----------------------#
         if local_rank == 0:
             eval_callback   = EvalCallback(model, input_shape, num_classes, val_lines, VOCdevkit_path, log_dir, Cuda, \
-                                            eval_flag=eval_flag, period=eval_period)
+                                            eval_flag=eval_flag, period=eval_period, image_ext=image_ext, selected_bands=selected_bands)
         else:
             eval_callback   = None
         

@@ -51,6 +51,7 @@ VOC拓展数据集的百度网盘如下：
 1、本文使用VOC格式进行训练。  
 2、训练前将标签文件放在VOCdevkit文件夹下的VOC2007文件夹下的SegmentationClass中。    
 3、训练前将图片文件放在VOCdevkit文件夹下的VOC2007文件夹下的JPEGImages中。    
+   当前多光谱版本中，JPEGImages目录也可以放`.tif`多波段影像；实际读取后缀由`multispectral_config.py`里的`image_ext`控制。    
 4、在训练前利用voc_annotation.py文件生成对应的txt。    
 5、在train.py文件夹下面，选择自己要使用的主干模型。
 6、注意修改train.py的num_classes为分类个数+1。    

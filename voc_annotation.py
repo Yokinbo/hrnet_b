@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
     print("Check datasets format, this may take a while.")
     print("检查数据集格式是否符合要求，这可能需要一段时间。")
-    classes_nums        = np.zeros([256], np.int)
+    classes_nums        = np.zeros([256], int)
     for i in tqdm(list):
         name            = total_seg[i]
         png_file_name   = os.path.join(segfilepath, name)
@@ -93,6 +93,6 @@ if __name__ == "__main__":
     elif classes_nums[0] > 0 and np.sum(classes_nums[1:]) == 0:
         print("检测到标签中仅仅包含背景像素点，数据格式有误，请仔细检查数据集格式。")
 
-    print("JPEGImages中的图片应当为.jpg文件、SegmentationClass中的图片应当为.png文件。")
+    print("JPEGImages中的影像后缀应和 multispectral_config.py 里的 image_ext 一致，例如多光谱为 .tif；SegmentationClass中的标签应当为.png文件。")
     print("如果格式有误，参考:")
     print("https://github.com/bubbliiiing/segmentation-format-fix")
