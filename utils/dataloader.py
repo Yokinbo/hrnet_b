@@ -1,4 +1,5 @@
 import os
+import random
 
 import cv2
 import numpy as np
@@ -7,6 +8,11 @@ from PIL import Image
 from torch.utils.data.dataset import Dataset
 
 from utils.utils import cvtColor, preprocess_input
+
+try:
+    from multispectral_config import normalization_config
+except Exception:
+    normalization_config = {"reflectance_scale": 10000.0}
 
 
 class SegmentationDataset(Dataset):
@@ -19,6 +25,7 @@ class SegmentationDataset(Dataset):
         dataset_path,
         image_ext=".tif",
         selected_bands=None,
+        augmentation_config=None,
     ):
         super(SegmentationDataset, self).__init__()
         self.annotation_lines = annotation_lines
@@ -33,6 +40,7 @@ class SegmentationDataset(Dataset):
         # selected_bands 控制多波段 tif 实际取哪些波段，使用 1-based 编号。
         self.image_ext = image_ext
         self.selected_bands = selected_bands
+        self.augmentation_config = augmentation_config or {"enabled": False}
 
     def __len__(self):
         return self.length
@@ -55,9 +63,12 @@ class SegmentationDataset(Dataset):
         image = np.asarray(image, dtype=np.float32)
         if image.ndim == 2:
             image = np.expand_dims(image, -1)
+        label = np.array(label)
+
+        if self._use_training_augmentation(image):
+            image, label = self._augment_training_sample(image, label)
 
         image = np.transpose(preprocess_input(image), [2, 0, 1])
-        label = np.array(label)
         label[label >= self.num_classes] = self.num_classes
 
         # 转成 one-hot。多出来的最后一类用于 ignore_index，和原版 HRNet 保持一致。
@@ -88,6 +99,115 @@ class SegmentationDataset(Dataset):
 
     def rand(self, a=0, b=1):
         return np.random.rand() * (b - a) + a
+
+    def _use_training_augmentation(self, image):
+        return (
+            self.train
+            and self.augmentation_config.get("enabled", False)
+            and self.image_ext.lower() in [".tif", ".tiff"]
+            and isinstance(image, np.ndarray)
+            and image.ndim == 3
+        )
+
+    def _to_reflectance(self, image):
+        scale = float(normalization_config.get("reflectance_scale", 10000.0))
+        if scale <= 0:
+            raise ValueError("normalization_config['reflectance_scale'] must be greater than 0.")
+        return image.astype(np.float32, copy=True) / scale
+
+    def _from_reflectance(self, reflectance):
+        scale = float(normalization_config.get("reflectance_scale", 10000.0))
+        return (reflectance.astype(np.float32, copy=False) * scale).astype(np.float32)
+
+    def _augment_training_sample(self, image, label):
+        cfg = self.augmentation_config
+        reflectance = self._to_reflectance(image)
+        label = label.astype(np.uint8, copy=False)
+
+        if random.random() < cfg.get("geometry_prob", 0.0):
+            reflectance, label = self._augment_geometry(reflectance, label)
+
+        if random.random() < cfg.get("scale_prob", 0.0):
+            reflectance, label = self._augment_random_scale(reflectance, label)
+
+        if random.random() < cfg.get("reflectance_prob", 0.0):
+            reflectance = self._augment_reflectance(reflectance)
+
+        if random.random() < cfg.get("shadow_prob", 0.0):
+            reflectance = self._augment_shadow(reflectance)
+
+        if random.random() < cfg.get("noise_prob", 0.0):
+            reflectance = self._augment_noise(reflectance)
+
+        return self._from_reflectance(reflectance), label
+
+    def _augment_geometry(self, image, label):
+        op = random.choice(["hflip", "vflip", "rot90", "rot180", "rot270"])
+        if op == "hflip":
+            return np.ascontiguousarray(image[:, ::-1, :]), np.ascontiguousarray(label[:, ::-1])
+        if op == "vflip":
+            return np.ascontiguousarray(image[::-1, :, :]), np.ascontiguousarray(label[::-1, :])
+
+        original_h, original_w = image.shape[:2]
+        k = {"rot90": 1, "rot180": 2, "rot270": 3}[op]
+        image = np.rot90(image, k=k).copy()
+        label = np.rot90(label, k=k).copy()
+        if image.shape[:2] != (original_h, original_w):
+            image = cv2.resize(image, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
+            label = cv2.resize(label, (original_w, original_h), interpolation=cv2.INTER_NEAREST)
+            if image.ndim == 2:
+                image = image[:, :, None]
+        return image.astype(np.float32), label.astype(np.uint8)
+
+    def _augment_reflectance(self, image):
+        cfg = self.augmentation_config
+        global_low, global_high = cfg.get("reflectance_global_range", [0.90, 1.10])
+        band_low, band_high = cfg.get("reflectance_band_range", [0.95, 1.05])
+        global_factor = random.uniform(global_low, global_high)
+        band_factors = np.random.uniform(
+            band_low,
+            band_high,
+            size=(1, 1, image.shape[2]),
+        ).astype(np.float32)
+        return image * global_factor * band_factors
+
+    def _augment_shadow(self, image):
+        cfg = self.augmentation_config
+        factor_low, factor_high = cfg.get("shadow_factor_range", [0.75, 0.90])
+        radius_low, radius_high = cfg.get("shadow_radius_range", [0.25, 0.45])
+        h, w = image.shape[:2]
+        center_y = random.uniform(-0.5, 0.5)
+        center_x = random.uniform(-0.5, 0.5)
+        radius = random.uniform(radius_low, radius_high)
+        yy = np.linspace(-1, 1, h, dtype=np.float32)[:, None]
+        xx = np.linspace(-1, 1, w, dtype=np.float32)[None, :]
+        shadow = np.exp(-((xx - center_x) ** 2 + (yy - center_y) ** 2) / max(radius, 1e-6))
+        factor = random.uniform(factor_low, factor_high)
+        shadow_map = 1.0 - (1.0 - factor) * shadow
+        return image * shadow_map[:, :, None]
+
+    def _augment_noise(self, image):
+        sigma_low, sigma_high = self.augmentation_config.get("noise_sigma_range", [0.003, 0.008])
+        sigma = random.uniform(sigma_low, sigma_high)
+        noise = np.random.normal(0.0, sigma, size=image.shape).astype(np.float32)
+        return image + noise
+
+    def _augment_random_scale(self, image, label):
+        crop_low, crop_high = self.augmentation_config.get("scale_crop_range", [0.85, 1.00])
+        ratio = random.uniform(crop_low, crop_high)
+        h, w = image.shape[:2]
+        crop_h = max(8, int(h * ratio))
+        crop_w = max(8, int(w * ratio))
+        top = random.randint(0, max(0, h - crop_h))
+        left = random.randint(0, max(0, w - crop_w))
+
+        image_crop = image[top:top + crop_h, left:left + crop_w, :]
+        label_crop = label[top:top + crop_h, left:left + crop_w]
+        image = cv2.resize(image_crop, (w, h), interpolation=cv2.INTER_LINEAR)
+        label = cv2.resize(label_crop, (w, h), interpolation=cv2.INTER_NEAREST)
+        if image.ndim == 2:
+            image = image[:, :, None]
+        return image.astype(np.float32), label.astype(np.uint8)
 
     def _image_size(self, image):
         if isinstance(image, Image.Image):
