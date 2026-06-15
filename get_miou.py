@@ -50,6 +50,7 @@ if __name__ == "__main__":
             image_ext=image_ext,
             selected_bands=selected_bands,
             in_channels=in_channels,
+            input_shape=[256, 256],
         )
         print("Load model done.")
 

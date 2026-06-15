@@ -8,6 +8,7 @@ lfw/
 logs/
 model_data/
 .temp_miou_out/
+论文制图/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
